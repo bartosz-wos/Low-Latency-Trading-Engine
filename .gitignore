@@ -1,0 +1,24 @@
+# C++ / Build
+build/
+*.o
+*.out
+*.exe
+*.dll
+*.so
+
+# Python / ML
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Data
+data/
+*.csv
+*.dat
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
