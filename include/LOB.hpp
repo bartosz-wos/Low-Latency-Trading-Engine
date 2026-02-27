@@ -1,5 +1,6 @@
 #pragma once
 
+//#include <iostream> // to delete
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -146,19 +147,84 @@ public:
 	}
 
 	inline void add_order(uint64_t order_id, uint64_t price, uint64_t size, Side side){
-		PriceLevel* level = get_or_create_level(price, side);
-		Order* new_order = order_pool.allocate();
-		new_order->order_id = order_id;
-		new_order->price = price;
-		new_order->size = size;
-		new_order->side = side;
+		if(side == Side::BID){
+			while(size > 0 && best_ask <= price && best_ask != UINT64_MAX){
+				PriceLevel* ask_level = get_or_create_level(best_ask, Side::ASK);
 
-		level->append_order(new_order);
+				if(ask_level->total_volume == 0){
+					best_ask++;
+					continue;
+				}
 
-		if(side == Side::BID && price > best_bid){
-			best_bid = price;
-		}else if(side == Side::ASK && price < best_ask){
-			best_ask = price;
+				Order* resting_ask = ask_level->head;
+				while(resting_ask != nullptr && size > 0){
+					uint64_t trade_volume = (size < resting_ask->size) ? size : resting_ask->size;
+
+					size -= trade_volume;
+					resting_ask->size -= trade_volume;
+					ask_level->total_volume -= trade_volume;
+
+					if(resting_ask->size == 0){
+						Order* to_delete = resting_ask;
+						resting_ask = resting_ask->next;
+						ask_level->remove_order(to_delete);
+						order_pool.deallocate(to_delete);
+					}else{
+						break;
+					}
+				}
+
+				if(ask_level->total_volume == 0){
+					best_ask++;
+				}
+			}
+		}else{
+			while(size > 0 && best_bid >= price && best_bid != 0){
+				PriceLevel* bid_level = get_or_create_level(best_bid, Side::BID);
+
+				if(bid_level->total_volume == 0){
+					best_bid--;
+					continue;
+				}
+
+				Order* resting_bid = bid_level->head;
+				while(resting_bid != nullptr && size > 0){
+					uint64_t trade_volume = (size < resting_bid->size) ? size : resting_bid->size;
+
+					size -= trade_volume;
+					resting_bid->size -= trade_volume;
+					bid_level->total_volume -= trade_volume;
+
+					if(resting_bid->size == 0){
+						Order* to_delete = resting_bid;
+						resting_bid = resting_bid->next;
+						bid_level->remove_order(to_delete);
+						order_pool.deallocate(to_delete);
+					}else{
+						break;
+					}
+				}
+
+				if(bid_level->total_volume == 0){
+					best_bid--;
+				}
+			}
+		}
+
+		if(size > 0){
+			PriceLevel* level = get_or_create_level(price, side);
+			Order* new_order = order_pool.allocate();
+			new_order->order_id = order_id;
+			new_order->price = price;
+			new_order->size = size;
+			new_order->side = side;
+			level->append_order(new_order);
+
+			if(side == Side::BID && price > best_bid){
+				best_bid = price;
+			}else if(side == Side::ASK && price < best_ask){
+				best_ask = price;
+			}
 		}
 	}
 };
