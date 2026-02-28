@@ -5,6 +5,7 @@ build/
 *.exe
 *.dll
 *.so
+matching_engine
 
 # Python / ML
 venv/
