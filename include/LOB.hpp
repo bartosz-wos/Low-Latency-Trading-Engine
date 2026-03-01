@@ -1,6 +1,5 @@
 #pragma once
 
-//#include <iostream> // to delete
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -110,6 +109,61 @@ public:
 	}
 };
 
+template<size_t MaxPrice=100000>
+class PriceBitset{
+private:
+	static constexpr size_t NUM_VARS = (MaxPrice + 63) >> 6;
+	
+	uint64_t vars[NUM_VARS] = {0};
+
+public:
+	inline void set_active(uint64_t price){
+		vars[price >> 6] |= (1ULL << (price & 63));
+	}
+
+	inline void set_inactive(uint64_t price){
+		vars[price >> 6] &= ~(1ULL << (price & 63));
+	}
+
+	inline uint64_t find_next_ask(uint64_t price) const{
+		size_t word_idx = price >> 6;
+		size_t bit_idx = price & 63;
+		uint64_t mask = vars[word_idx] & (~0ULL << bit_idx);
+
+		if(mask != 0){
+			return (word_idx << 6) + __builtin_ctzll(mask);
+		}
+		
+		for(size_t i = word_idx + 1; i < NUM_VARS; ++i){
+			if(vars[i] != 0){
+				return (i << 6) + __builtin_ctzll(vars[i]);
+			}
+		}
+		return UINT64_MAX;
+	}
+
+	inline uint64_t find_next_bid(uint64_t price) const{
+		size_t word_idx = price >> 6;
+		size_t bit_idx = price & 63;
+		uint64_t mask = vars[word_idx];
+
+		if(bit_idx < 63){
+			mask &= (1ULL << (bit_idx + 1)) - 1;
+		}
+
+		if(mask != 0){
+			return (word_idx << 6) + (63 - __builtin_clzll(mask));
+		}
+
+		for(size_t i = word_idx; i-- > 0;){
+			if(vars[i] != 0){
+				return (i << 6) + (63 - __builtin_clzll(vars[i]));
+			}
+		}
+		return 0;
+	}
+};
+
 class LimitOrderBook{
 private:
 	static constexpr uint64_t FAST_PRICE_MAX = 100000;
@@ -122,6 +176,9 @@ private:
 
 	OrderPool<> order_pool;
 	PriceLevelPool<> level_pool;
+
+	PriceBitset<FAST_PRICE_MAX> fast_bids_bitset;
+	PriceBitset<FAST_PRICE_MAX> fast_asks_bitset;
 
 	uint64_t best_bid;
 	uint64_t best_ask;
@@ -152,7 +209,9 @@ public:
 				PriceLevel* ask_level = get_or_create_level(best_ask, Side::ASK);
 
 				if(ask_level->total_volume == 0){
-					best_ask++;
+					if(best_ask < FAST_PRICE_MAX)
+						fast_asks_bitset.set_inactive(best_ask);
+					best_ask = (best_ask < FAST_PRICE_MAX) ? fast_asks_bitset.find_next_ask(best_ask + 1) : best_ask + 1;
 					continue;
 				}
 
@@ -175,7 +234,9 @@ public:
 				}
 
 				if(ask_level->total_volume == 0){
-					best_ask++;
+					if(best_ask < FAST_PRICE_MAX)
+                                                fast_asks_bitset.set_inactive(best_ask);
+                                        best_ask = (best_ask < FAST_PRICE_MAX) ? fast_asks_bitset.find_next_ask(best_ask + 1) : best_ask + 1;
 				}
 			}
 		}else{
@@ -183,7 +244,9 @@ public:
 				PriceLevel* bid_level = get_or_create_level(best_bid, Side::BID);
 
 				if(bid_level->total_volume == 0){
-					best_bid--;
+					if(best_bid < FAST_PRICE_MAX)
+						fast_bids_bitset.set_inactive(best_bid);
+					best_bid = (best_bid < FAST_PRICE_MAX) ? fast_bids_bitset.find_next_bid(best_bid - 1) : best_bid - 1;
 					continue;
 				}
 
@@ -206,7 +269,9 @@ public:
 				}
 
 				if(bid_level->total_volume == 0){
-					best_bid--;
+					if(best_bid < FAST_PRICE_MAX)
+                                                fast_bids_bitset.set_inactive(best_bid);
+                                        best_bid = (best_bid < FAST_PRICE_MAX) ? fast_bids_bitset.find_next_bid(best_bid - 1) : best_bid - 1;
 				}
 			}
 		}
@@ -219,6 +284,13 @@ public:
 			new_order->size = size;
 			new_order->side = side;
 			level->append_order(new_order);
+
+			if(price < FAST_PRICE_MAX){
+                                if(side == Side::BID)
+                                        fast_bids_bitset.set_active(price);
+                                else
+                                        fast_asks_bitset.set_active(price);
+                        }
 
 			if(side == Side::BID && price > best_bid){
 				best_bid = price;
