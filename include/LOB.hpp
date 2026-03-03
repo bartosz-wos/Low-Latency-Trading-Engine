@@ -18,7 +18,7 @@ struct Order{
 	Order* prev;
 };
 
-template<size_t PoolSize = 100000>
+template<size_t PoolSize = 2000000>
 class OrderPool{
 private:
 	Order data[PoolSize];
@@ -174,8 +174,8 @@ private:
 	std::unordered_map<uint64_t, PriceLevel*> slow_bids;
 	std::unordered_map<uint64_t, PriceLevel*> slow_asks;
 
-	OrderPool<> order_pool;
-	PriceLevelPool<> level_pool;
+	OrderPool<2000000> order_pool;
+	PriceLevelPool<20000> level_pool;
 
 	PriceBitset<FAST_PRICE_MAX> fast_bids_bitset;
 	PriceBitset<FAST_PRICE_MAX> fast_asks_bitset;
@@ -201,6 +201,40 @@ public:
 			fast_bids[i].price = i;
 			fast_asks[i].price = i;
 		}
+	}
+
+    	void debug(){
+        	if(best_bid == 0) std::cout << "Best Bid: NONE" << std::endl;
+        	else std::cout << "Best Bid: " << best_bid << std::endl;
+
+        	if(best_ask == UINT64_MAX) std::cout << "Best Ask: NONE" << std::endl;
+        	else std::cout << "Best Ask: " << best_ask << std::endl;
+    	}
+
+    	inline uint64_t get_best_bid_volume(){
+        	if(best_bid == 0) return 0;
+        	if(best_bid < FAST_PRICE_MAX) 
+			return fast_bids[best_bid].total_volume;
+
+        	auto it = slow_bids.find(best_bid);
+        	return (it != slow_bids.end()) ? it->second->total_volume : 0;
+    	}
+
+    	inline uint64_t get_best_ask_volume(){
+        	if(best_ask == UINT64_MAX) return 0;
+        	if(best_ask < FAST_PRICE_MAX) 
+			return fast_asks[best_ask].total_volume;
+
+        	auto it = slow_asks.find(best_ask);
+        	return (it != slow_asks.end()) ? it->second->total_volume : 0;
+    	}
+
+	inline uint64_t get_best_bid_price(){
+		return best_bid;
+	}
+
+	inline uint64_t get_best_ask_price(){
+		return best_ask;
 	}
 
 	inline void add_order(uint64_t order_id, uint64_t price, uint64_t size, Side side){

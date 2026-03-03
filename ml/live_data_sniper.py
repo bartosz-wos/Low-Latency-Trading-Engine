@@ -6,7 +6,7 @@ from datetime import datetime
 
 async def data_sniper():
     url = "wss://stream.binance.com:9443/ws/btcusdt@depth5@100ms"
-    filename = "ml/binance_top5_data.csv"
+    filename = "binance_top5_data_v2.csv"
 
     print("--- Starting Binance WS Monitoring  ---")
 
