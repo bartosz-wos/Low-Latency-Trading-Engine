@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <stdexcept>
-#include <unordered_map>
+#include <map>
 
 enum class Side : uint8_t{
 	BID = 1,
@@ -171,8 +171,10 @@ private:
 	PriceLevel fast_bids[FAST_PRICE_MAX];
 	PriceLevel fast_asks[FAST_PRICE_MAX];
 
-	std::unordered_map<uint64_t, PriceLevel*> slow_bids;
-	std::unordered_map<uint64_t, PriceLevel*> slow_asks;
+	std::map<uint64_t, PriceLevel*> slow_bids;
+	std::map<uint64_t, PriceLevel*> slow_asks;
+
+	std::unordered_map<uint64_t, Order*> order_map;
 
 	OrderPool<2000000> order_pool;
 	PriceLevelPool<20000> level_pool;
@@ -201,6 +203,7 @@ public:
 			fast_bids[i].price = i;
 			fast_asks[i].price = i;
 		}
+		order_map.reserve(2000000);
 	}
 
     	void debug(){
@@ -243,9 +246,21 @@ public:
 				PriceLevel* ask_level = get_or_create_level(best_ask, Side::ASK);
 
 				if(ask_level->total_volume == 0){
-					if(best_ask < FAST_PRICE_MAX)
+					if(best_ask < FAST_PRICE_MAX){
 						fast_asks_bitset.set_inactive(best_ask);
-					best_ask = (best_ask < FAST_PRICE_MAX) ? fast_asks_bitset.find_next_ask(best_ask + 1) : best_ask + 1;
+						best_ask = fast_asks_bitset.find_next_ask(best_ask + 1);
+
+						if(best_ask == UINT64_MAX && !slow_asks.empty()){
+							best_ask = slow_asks.begin()->first;
+						}
+					}else{
+						slow_asks.erase(best_ask);
+						if(!slow_asks.empty()){
+							best_ask = slow_asks.begin()->first;
+						}else{
+							best_ask = UINT64_MAX;
+						}
+					}
 					continue;
 				}
 
@@ -268,9 +283,16 @@ public:
 				}
 
 				if(ask_level->total_volume == 0){
-					if(best_ask < FAST_PRICE_MAX)
+					if(best_ask < FAST_PRICE_MAX){
                                                 fast_asks_bitset.set_inactive(best_ask);
-                                        best_ask = (best_ask < FAST_PRICE_MAX) ? fast_asks_bitset.find_next_ask(best_ask + 1) : best_ask + 1;
+						best_ask = fast_asks_bitset.find_next_ask(best_ask + 1);
+						if(best_ask == UINT64_MAX && !slow_asks.empty()){
+							best_ask = slow_asks.begin()->first;
+						}
+					}else{
+						slow_asks.erase(best_ask);
+						best_ask = slow_asks.empty() ? UINT64_MAX : slow_asks.begin()->first;
+					}
 				}
 			}
 		}else{
@@ -278,9 +300,20 @@ public:
 				PriceLevel* bid_level = get_or_create_level(best_bid, Side::BID);
 
 				if(bid_level->total_volume == 0){
-					if(best_bid < FAST_PRICE_MAX)
+					if(best_bid < FAST_PRICE_MAX){
 						fast_bids_bitset.set_inactive(best_bid);
-					best_bid = (best_bid < FAST_PRICE_MAX) ? fast_bids_bitset.find_next_bid(best_bid - 1) : best_bid - 1;
+						best_bid = fast_bids_bitset.find_next_bid(best_bid - 1);
+						if(best_bid == 0 && !slow_bids.empty()){
+							best_bid = slow_bids.rbegin()->first;
+						}
+					}else{
+						slow_bids.erase(best_bid);
+						if(!slow_bids.empty()){
+							best_bid = slow_bids.rbegin()->first;
+						}else{
+							best_bid = fast_bids_bitset.find_next_bid(FAST_PRICE_MAX - 1);
+						}
+					}
 					continue;
 				}
 
@@ -303,9 +336,22 @@ public:
 				}
 
 				if(bid_level->total_volume == 0){
-					if(best_bid < FAST_PRICE_MAX)
-                                                fast_bids_bitset.set_inactive(best_bid);
-                                        best_bid = (best_bid < FAST_PRICE_MAX) ? fast_bids_bitset.find_next_bid(best_bid - 1) : best_bid - 1;
+					if(best_bid < FAST_PRICE_MAX){
+						fast_bids_bitset.set_inactive(best_bid);
+						best_bid = fast_bids_bitset.find_next_bid(best_bid - 1);
+
+						if(best_bid == 0 && !slow_bids.empty()){
+							best_bid = slow_bids.rbegin()->first;
+						}
+					}else{
+						slow_bids.erase(best_bid);
+						
+						if(slow_bids.empty()){
+							best_bid = fast_bids_bitset.find_next_bid(FAST_PRICE_MAX - 1);
+						}else{
+							best_bid = slow_bids.rbegin()->first;
+						}
+					}
 				}
 			}
 		}
@@ -318,6 +364,7 @@ public:
 			new_order->size = size;
 			new_order->side = side;
 			level->append_order(new_order);
+			order_map[order_id] = new_order;
 
 			if(price < FAST_PRICE_MAX){
                                 if(side == Side::BID)
