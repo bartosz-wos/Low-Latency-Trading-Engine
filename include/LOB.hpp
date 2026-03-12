@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <map>
 
@@ -229,6 +230,85 @@ public:
 	}
 };
 
+template<size_t Capacity=4096>
+class FlatMap{
+private:
+	struct Item{
+		uint64_t key;
+		PriceLevel* level;
+	};
+
+	Item table[Capacity];
+	size_t count = 0;
+
+	inline size_t find_pos(uint64_t key) const{
+		size_t lef = 0;
+		size_t rig = count;
+		while(lef < rig){
+			size_t mid = (lef + rig) >> 1;
+			if(table[mid].key < key){
+				lef = mid + 1;
+			}else{
+				rig = mid;
+			}
+		}
+		return lef;
+	}
+
+public:
+	inline bool empty(){
+		return count == 0;
+	}
+
+	inline uint64_t get_min() const{
+		return count > 0 ? table[0].key : UINT64_MAX;
+	}
+
+	inline uint64_t get_max() const{
+		return count > 0 ? table[count - 1].key : 0;
+	}
+
+	inline PriceLevel* find(uint64_t key) const{
+		size_t pos = find_pos(key);
+		if(pos < count && table[pos].key == key){
+			return table[pos].level;
+		}
+		return nullptr;
+	}
+
+	inline void insert(uint64_t key, PriceLevel* level){
+		size_t pos = find_pos(key);
+
+		if(__builtin_expect(pos < count && table[pos].key == key, 0)){
+			table[pos].level = level;
+			return;
+		}
+
+		if(__builtin_expect(count >= Capacity, 0)){
+			throw std::runtime_error("FlatMap full");
+		}
+
+		if(pos < count){
+			std::memmove(&table[pos + 1], &table[pos], (count - pos) * sizeof(Item));
+		}
+
+		table[pos].key = key;
+		table[pos].level = level;
+		count++;
+	}
+
+	inline void erase(uint64_t key){
+		size_t pos = find_pos(key);
+
+		if(pos < count && table[pos].key == key){
+			if(pos < count - 1){
+				std::memmove(&table[pos], &table[pos + 1], (count - pos - 1) * sizeof(Item));
+			}
+			count--;
+		}
+	}
+};
+
 class LimitOrderBook{
 private:
 	static constexpr uint64_t FAST_PRICE_MAX = 100000;
@@ -236,8 +316,8 @@ private:
 	PriceLevel fast_bids[FAST_PRICE_MAX];
 	PriceLevel fast_asks[FAST_PRICE_MAX];
 
-	std::map<uint64_t, PriceLevel*> slow_bids;
-	std::map<uint64_t, PriceLevel*> slow_asks;
+	FlatMap<4096> slow_bids;
+	FlatMap<4096> slow_asks;
 
 	FibMap<8388608> order_map;
 
@@ -255,11 +335,13 @@ private:
 			return (side == Side::BID) ? &fast_bids[price] : &fast_asks[price];
 		}else{
 			auto& slow_map = (side == Side::BID) ? slow_bids : slow_asks;
-			auto [it, inserted] = slow_map.try_emplace(price, nullptr);
-			if(inserted){
-				it->second = level_pool.allocate(price);
+			PriceLevel* level = slow_map.find(price);
+
+			if(__builtin_expect(level == nullptr, 0)){
+				level = level_pool.allocate(price);
+				slow_map.insert(price, level);
 			}
-			return it->second;
+			return level;
 		}
 	}
 public:
@@ -283,8 +365,8 @@ public:
         	if(best_bid < FAST_PRICE_MAX) 
 			return fast_bids[best_bid].total_volume;
 
-        	auto it = slow_bids.find(best_bid);
-        	return (it != slow_bids.end()) ? it->second->total_volume : 0;
+		PriceLevel* level = slow_bids.find(best_bid);
+		return (level != nullptr) ? level->total_volume : 0;
     	}
 
     	inline uint64_t get_best_ask_volume(){
@@ -292,8 +374,8 @@ public:
         	if(best_ask < FAST_PRICE_MAX) 
 			return fast_asks[best_ask].total_volume;
 
-        	auto it = slow_asks.find(best_ask);
-        	return (it != slow_asks.end()) ? it->second->total_volume : 0;
+		PriceLevel* level = slow_asks.find(best_ask);
+                return (level != nullptr) ? level->total_volume : 0;
     	}
 
 	inline uint64_t get_best_bid_price(){
@@ -315,12 +397,12 @@ public:
 						best_ask = fast_asks_bitset.find_next_ask(best_ask + 1);
 
 						if(best_ask == UINT64_MAX && !slow_asks.empty()){
-							best_ask = slow_asks.begin()->first;
+							best_ask = slow_asks.get_min();
 						}
 					}else{
 						slow_asks.erase(best_ask);
 						if(!slow_asks.empty()){
-							best_ask = slow_asks.begin()->first;
+							best_ask = slow_asks.get_min();
 						}else{
 							best_ask = UINT64_MAX;
 						}
@@ -352,11 +434,11 @@ public:
                                                 fast_asks_bitset.set_inactive(best_ask);
 						best_ask = fast_asks_bitset.find_next_ask(best_ask + 1);
 						if(best_ask == UINT64_MAX && !slow_asks.empty()){
-							best_ask = slow_asks.begin()->first;
+							best_ask = slow_asks.get_min();
 						}
 					}else{
 						slow_asks.erase(best_ask);
-						best_ask = slow_asks.empty() ? UINT64_MAX : slow_asks.begin()->first;
+						best_ask = slow_asks.empty() ? UINT64_MAX : slow_asks.get_min();
 					}
 				}
 			}
@@ -369,12 +451,12 @@ public:
 						fast_bids_bitset.set_inactive(best_bid);
 						best_bid = fast_bids_bitset.find_next_bid(best_bid - 1);
 						if(best_bid == 0 && !slow_bids.empty()){
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}
 					}else{
 						slow_bids.erase(best_bid);
 						if(!slow_bids.empty()){
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}else{
 							best_bid = fast_bids_bitset.find_next_bid(FAST_PRICE_MAX - 1);
 						}
@@ -407,7 +489,7 @@ public:
 						best_bid = fast_bids_bitset.find_next_bid(best_bid - 1);
 
 						if(best_bid == 0 && !slow_bids.empty()){
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}
 					}else{
 						slow_bids.erase(best_bid);
@@ -415,7 +497,7 @@ public:
 						if(slow_bids.empty()){
 							best_bid = fast_bids_bitset.find_next_bid(FAST_PRICE_MAX - 1);
 						}else{
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}
 					}
 				}
@@ -453,55 +535,58 @@ public:
 			return;
 		}
 
+		uint64_t price = order->price;
+		Side side = order->side;
+
 		order_map.erase(order_id);
 
-		PriceLevel* level = get_or_create_level(order->price, order->side);
+		PriceLevel* level = get_or_create_level(price, side);
 		level->remove_order(order);
 		order_pool.deallocate(order);
 
 		if(__builtin_expect(level->total_volume == 0, 0)){
-			if(order->side == Side::BID){
-				if(order->price == best_bid){
+			if(side == Side::BID){
+				if(price == best_bid){
 					if(best_bid < FAST_PRICE_MAX){
 						fast_bids_bitset.set_inactive(best_bid);
 						best_bid = fast_bids_bitset.find_next_bid(best_bid - 1);
 						
 						if(best_bid == 0 && !slow_bids.empty()){
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}
 					}else{
 						slow_bids.erase(best_bid);
 						if(slow_bids.empty()){
 							best_bid = fast_bids_bitset.find_next_bid(FAST_PRICE_MAX - 1);
 						}else{
-							best_bid = slow_bids.rbegin()->first;
+							best_bid = slow_bids.get_max();
 						}
 					}
-				}else if(order->price < FAST_PRICE_MAX){
-					fast_bids_bitset.set_inactive(order->price);
+				}else if(price < FAST_PRICE_MAX){
+					fast_bids_bitset.set_inactive(price);
 				}else{
-					slow_bids.erase(order->price);
+					slow_bids.erase(price);
 				}
 			}else{
-				if(order->price == best_ask){
+				if(price == best_ask){
 					if(best_ask < FAST_PRICE_MAX){
 						fast_asks_bitset.set_inactive(best_ask);
 						best_ask = fast_asks_bitset.find_next_ask(best_ask + 1);
 						if(best_ask == UINT64_MAX && !slow_asks.empty()){
-							best_ask = slow_asks.begin()->first;
+							best_ask = slow_asks.get_min();
 						}
 					}else{
 						slow_asks.erase(best_ask);
 						if(slow_asks.empty()){
 							best_ask = UINT64_MAX;
 						}else{
-							best_ask = slow_asks.begin()->first;
+							best_ask = slow_asks.get_min();
 						}
 					}
-				}else if(order->price < FAST_PRICE_MAX){
-					fast_asks_bitset.set_inactive(order->price);
+				}else if(price < FAST_PRICE_MAX){
+					fast_asks_bitset.set_inactive(price);
 				}else{
-					slow_asks.erase(order->price);
+					slow_asks.erase(price);
 				}
 			}
 		}
